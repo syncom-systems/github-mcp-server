@@ -954,6 +954,327 @@ func Test_ListDiscussionCategories(t *testing.T) {
 	}
 }
 
+type discussionWriteTestCase struct {
+	name            string
+	requestArgs     map[string]any
+	mockedClient    *http.Client
+	expectToolError bool
+	expectedErrMsg  string
+	expectedID      string
+	expectedURL     string
+}
+
+func runDiscussionWriteTests(t *testing.T, tests []discussionWriteTestCase) {
+	t.Helper()
+
+	toolDef := DiscussionWrite(translations.NullTranslationHelper)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gqlClient := githubv4.NewClient(tc.mockedClient)
+			deps := BaseDeps{GQLClient: gqlClient}
+			handler := toolDef.Handler(deps)
+
+			req := createMCPRequest(tc.requestArgs)
+			res, err := handler(ContextWithDeps(context.Background(), deps), &req)
+			require.NoError(t, err)
+
+			text := getTextResult(t, res).Text
+
+			if tc.expectToolError {
+				require.True(t, res.IsError)
+				assert.Contains(t, text, tc.expectedErrMsg)
+				return
+			}
+
+			require.False(t, res.IsError, text)
+			var response MinimalResponse
+			require.NoError(t, json.Unmarshal([]byte(text), &response))
+			assert.Equal(t, tc.expectedID, response.ID)
+			assert.Equal(t, tc.expectedURL, response.URL)
+		})
+	}
+}
+
+type discussionWriteMutation struct {
+	Discussion struct {
+		ID  githubv4.ID
+		URL githubv4.String `graphql:"url"`
+	}
+}
+
+var discussionWriteResponse = map[string]any{
+	"discussion": map[string]any{
+		"id":  "D_kwDOTest123",
+		"url": "https://github.com/owner/repo/discussions/1",
+	},
+}
+
+func Test_DiscussionWrite(t *testing.T) {
+	t.Parallel()
+
+	toolDef := DiscussionWrite(translations.NullTranslationHelper)
+	tool := toolDef.Tool
+	require.NoError(t, toolsnaps.Test(tool.Name, tool))
+
+	assert.Equal(t, "discussion_write", tool.Name)
+	assert.NotEmpty(t, tool.Description)
+	assert.False(t, tool.Annotations.ReadOnlyHint, "discussion_write should not be read-only")
+	schema, ok := tool.InputSchema.(*jsonschema.Schema)
+	require.True(t, ok, "InputSchema should be *jsonschema.Schema")
+	assert.Contains(t, schema.Properties, "method")
+	assert.Contains(t, schema.Properties, "owner")
+	assert.Contains(t, schema.Properties, "repo")
+	assert.Contains(t, schema.Properties, "discussionNumber")
+	assert.Contains(t, schema.Properties, "title")
+	assert.Contains(t, schema.Properties, "body")
+	assert.Contains(t, schema.Properties, "category")
+	assert.ElementsMatch(t, schema.Required, []string{"method", "owner", "repo"})
+
+	runDiscussionWriteTests(t, []discussionWriteTestCase{
+		{
+			name:            "method: missing",
+			requestArgs:     map[string]any{"owner": "owner", "repo": "repo"},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "missing required parameter: method",
+		},
+		{
+			name:            "owner: missing",
+			requestArgs:     map[string]any{"method": "create", "repo": "repo"},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "missing required parameter: owner",
+		},
+		{
+			name:            "invalid method",
+			requestArgs:     map[string]any{"method": "delete", "owner": "owner", "repo": "repo"},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "invalid method, must be one of: 'create', 'update'",
+		},
+	})
+}
+
+func Test_DiscussionWrite_Create(t *testing.T) {
+	t.Parallel()
+
+	repositoryQueryMatcher := func(response githubv4mock.GQLResponse) githubv4mock.Matcher {
+		return githubv4mock.NewQueryMatcher(
+			struct {
+				Repository struct {
+					ID githubv4.ID
+				} `graphql:"repository(owner: $owner, name: $repo)"`
+			}{},
+			map[string]any{
+				"owner": githubv4.String("owner"),
+				"repo":  githubv4.String("repo"),
+			},
+			response,
+		)
+	}
+	repositoryFound := repositoryQueryMatcher(githubv4mock.DataResponse(map[string]any{
+		"repository": map[string]any{"id": "R_kwDOTest"},
+	}))
+	createMutationMatcher := func(response githubv4mock.GQLResponse) githubv4mock.Matcher {
+		return githubv4mock.NewMutationMatcher(
+			struct {
+				CreateDiscussion discussionWriteMutation `graphql:"createDiscussion(input: $input)"`
+			}{},
+			githubv4.CreateDiscussionInput{
+				RepositoryID: githubv4.ID("R_kwDOTest"),
+				CategoryID:   githubv4.ID("DIC_kwDOCategory"),
+				Title:        githubv4.String("A new discussion"),
+				Body:         githubv4.String("Discussion body"),
+			},
+			nil,
+			response,
+		)
+	}
+	createArgs := map[string]any{
+		"method":   "create",
+		"owner":    "owner",
+		"repo":     "repo",
+		"title":    "A new discussion",
+		"body":     "Discussion body",
+		"category": "DIC_kwDOCategory",
+	}
+
+	runDiscussionWriteTests(t, []discussionWriteTestCase{
+		{
+			name:        "create: successful discussion creation",
+			requestArgs: createArgs,
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				repositoryFound,
+				createMutationMatcher(githubv4mock.DataResponse(map[string]any{"createDiscussion": discussionWriteResponse})),
+			),
+			expectedID:  "D_kwDOTest123",
+			expectedURL: "https://github.com/owner/repo/discussions/1",
+		},
+		{
+			name: "create: missing title",
+			requestArgs: map[string]any{
+				"method": "create", "owner": "owner", "repo": "repo", "body": "Discussion body", "category": "DIC_kwDOCategory",
+			},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "missing required parameter: title",
+		},
+		{
+			name: "create: missing body",
+			requestArgs: map[string]any{
+				"method": "create", "owner": "owner", "repo": "repo", "title": "A new discussion", "category": "DIC_kwDOCategory",
+			},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "missing required parameter: body",
+		},
+		{
+			name: "create: missing category",
+			requestArgs: map[string]any{
+				"method": "create", "owner": "owner", "repo": "repo", "title": "A new discussion", "body": "Discussion body",
+			},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "missing required parameter: category",
+		},
+		{
+			name:        "create: repository not found",
+			requestArgs: createArgs,
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				repositoryQueryMatcher(githubv4mock.ErrorResponse("Could not resolve to a Repository with the name 'owner/repo'.")),
+			),
+			expectToolError: true,
+			expectedErrMsg:  "Could not resolve to a Repository with the name 'owner/repo'.",
+		},
+		{
+			name:        "create: mutation failure",
+			requestArgs: createArgs,
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				repositoryFound,
+				createMutationMatcher(githubv4mock.ErrorResponse("Discussions are disabled for this repository")),
+			),
+			expectToolError: true,
+			expectedErrMsg:  "Discussions are disabled for this repository",
+		},
+	})
+}
+
+func Test_DiscussionWrite_Update(t *testing.T) {
+	t.Parallel()
+
+	discussionFound := discussionCommentWriteDiscussionQueryMatcher(
+		1,
+		githubv4mock.DataResponse(map[string]any{
+			"repository": map[string]any{
+				"discussion": map[string]any{"id": "D_kwDOTest123"},
+			},
+		}),
+	)
+	updateMutationMatcher := func(input githubv4.UpdateDiscussionInput, response githubv4mock.GQLResponse) githubv4mock.Matcher {
+		return githubv4mock.NewMutationMatcher(
+			struct {
+				UpdateDiscussion discussionWriteMutation `graphql:"updateDiscussion(input: $input)"`
+			}{},
+			input,
+			nil,
+			response,
+		)
+	}
+	updated := githubv4mock.DataResponse(map[string]any{"updateDiscussion": discussionWriteResponse})
+
+	runDiscussionWriteTests(t, []discussionWriteTestCase{
+		{
+			name: "update: title, body and category",
+			requestArgs: map[string]any{
+				"method":           "update",
+				"owner":            "owner",
+				"repo":             "repo",
+				"discussionNumber": float64(1),
+				"title":            "Updated title",
+				"body":             "Updated body",
+				"category":         "DIC_kwDOOther",
+			},
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				discussionFound,
+				updateMutationMatcher(githubv4.UpdateDiscussionInput{
+					DiscussionID: githubv4.ID("D_kwDOTest123"),
+					Title:        githubv4.NewString("Updated title"),
+					Body:         githubv4.NewString("Updated body"),
+					CategoryID:   githubv4.NewID("DIC_kwDOOther"),
+				}, updated),
+			),
+			expectedID:  "D_kwDOTest123",
+			expectedURL: "https://github.com/owner/repo/discussions/1",
+		},
+		{
+			name: "update: title only leaves body and category unchanged",
+			requestArgs: map[string]any{
+				"method":           "update",
+				"owner":            "owner",
+				"repo":             "repo",
+				"discussionNumber": "1",
+				"title":            "Updated title",
+			},
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				discussionFound,
+				updateMutationMatcher(githubv4.UpdateDiscussionInput{
+					DiscussionID: githubv4.ID("D_kwDOTest123"),
+					Title:        githubv4.NewString("Updated title"),
+				}, updated),
+			),
+			expectedID:  "D_kwDOTest123",
+			expectedURL: "https://github.com/owner/repo/discussions/1",
+		},
+		{
+			name: "update: missing discussionNumber",
+			requestArgs: map[string]any{
+				"method": "update", "owner": "owner", "repo": "repo", "title": "Updated title",
+			},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "missing required parameter: discussionNumber",
+		},
+		{
+			name: "update: nothing to change",
+			requestArgs: map[string]any{
+				"method": "update", "owner": "owner", "repo": "repo", "discussionNumber": float64(1),
+			},
+			mockedClient:    githubv4mock.NewMockedHTTPClient(),
+			expectToolError: true,
+			expectedErrMsg:  "at least one of title, body or category must be provided for 'update'",
+		},
+		{
+			name: "update: discussion not found",
+			requestArgs: map[string]any{
+				"method": "update", "owner": "owner", "repo": "repo", "discussionNumber": float64(999), "body": "Updated body",
+			},
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				discussionCommentWriteDiscussionQueryMatcher(
+					999,
+					githubv4mock.ErrorResponse("Could not resolve to a Discussion with the number of 999."),
+				),
+			),
+			expectToolError: true,
+			expectedErrMsg:  "Could not resolve to a Discussion with the number of 999.",
+		},
+		{
+			name: "update: mutation failure",
+			requestArgs: map[string]any{
+				"method": "update", "owner": "owner", "repo": "repo", "discussionNumber": float64(1), "body": "Updated body",
+			},
+			mockedClient: githubv4mock.NewMockedHTTPClient(
+				discussionFound,
+				updateMutationMatcher(githubv4.UpdateDiscussionInput{
+					DiscussionID: githubv4.ID("D_kwDOTest123"),
+					Body:         githubv4.NewString("Updated body"),
+				}, githubv4mock.ErrorResponse("Resource not accessible by integration")),
+			),
+			expectToolError: true,
+			expectedErrMsg:  "Resource not accessible by integration",
+		},
+	})
+}
+
 func Test_DiscussionCommentWrite(t *testing.T) {
 	t.Parallel()
 

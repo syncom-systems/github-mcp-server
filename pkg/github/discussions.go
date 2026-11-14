@@ -614,6 +614,221 @@ func GetDiscussionComments(t translations.TranslationHelperFunc) inventory.Serve
 	)
 }
 
+func DiscussionWrite(t translations.TranslationHelperFunc) inventory.ServerTool {
+	return NewTool[DiscussionWriteInput, *MinimalResponse](
+		ToolsetMetadataDiscussions,
+		mcp.Tool{
+			Name:         "discussion_write",
+			OutputSchema: discussionNotificationOutputSchema[MinimalResponse](),
+			Description: t("TOOL_DISCUSSION_WRITE_DESCRIPTION", `Create a new or update an existing discussion in a GitHub repository.
+Use list_discussion_categories to find the category ID.`),
+			Annotations: &mcp.ToolAnnotations{
+				Title:        t("TOOL_DISCUSSION_WRITE_USER_TITLE", "Create or update discussion"),
+				ReadOnlyHint: false,
+			},
+			InputSchema: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"method": {
+						Type: "string",
+						Description: `Write operation to perform on a discussion.
+Options are:
+- 'create' - creates a new discussion.
+- 'update' - updates the title, body or category of an existing discussion.
+`,
+						Enum: []any{"create", "update"},
+					},
+					"owner": {
+						Type:        "string",
+						Description: "Repository owner",
+					},
+					"repo": {
+						Type:        "string",
+						Description: "Repository name",
+					},
+					"discussionNumber": {
+						Type:        "number",
+						Description: "Discussion number (required for 'update' method)",
+					},
+					"title": {
+						Type:        "string",
+						Description: "Discussion title (required for 'create' method)",
+					},
+					"body": {
+						Type:        "string",
+						Description: "Discussion content (required for 'create' method)",
+					},
+					"category": {
+						Type:        "string",
+						Description: "Discussion category ID (required for 'create' method). For 'update', moves the discussion to this category of the same repository.",
+					},
+				},
+				Required: []string{"method", "owner", "repo"},
+			},
+		},
+		scopes.RequireAll(scopes.Repo),
+		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, input DiscussionWriteInput) (*mcp.CallToolResult, *MinimalResponse, error) {
+			args, err := discussionNotificationArguments(input)
+			if err != nil {
+				return nil, nil, err
+			}
+			method, err := RequiredParam[string](args, "method")
+			if err != nil {
+				return utils.NewToolResultError(err.Error()), nil, nil
+			}
+			owner, err := RequiredParam[string](args, "owner")
+			if err != nil {
+				return utils.NewToolResultError(err.Error()), nil, nil
+			}
+			repo, err := RequiredParam[string](args, "repo")
+			if err != nil {
+				return utils.NewToolResultError(err.Error()), nil, nil
+			}
+
+			client, err := deps.GetGQLClient(ctx)
+			if err != nil {
+				return utils.NewToolResultError(fmt.Sprintf("failed to get GitHub GQL client: %v", err)), nil, nil
+			}
+
+			switch method {
+			case "create":
+				return createDiscussion(ctx, client, owner, repo, args)
+			case "update":
+				return updateDiscussion(ctx, client, owner, repo, args)
+			default:
+				return utils.NewToolResultError("invalid method, must be one of: 'create', 'update'"), nil, nil
+			}
+		},
+		normalizeDiscussionNotificationIntegers("discussionNumber"),
+	)
+}
+
+func createDiscussion(ctx context.Context, client *githubv4.Client, owner, repo string, args map[string]any) (*mcp.CallToolResult, *MinimalResponse, error) {
+	title, err := RequiredParam[string](args, "title")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+	body, err := RequiredParam[string](args, "body")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+	category, err := RequiredParam[string](args, "category")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+
+	var q struct {
+		Repository struct {
+			ID githubv4.ID
+		} `graphql:"repository(owner: $owner, name: $repo)"`
+	}
+	vars := map[string]any{
+		"owner": githubv4.String(owner),
+		"repo":  githubv4.String(repo),
+	}
+	if err := client.Query(ctx, &q, vars); err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+
+	input := githubv4.CreateDiscussionInput{
+		RepositoryID: q.Repository.ID,
+		CategoryID:   githubv4.ID(category),
+		Title:        githubv4.String(title),
+		Body:         githubv4.String(body),
+	}
+	var mutation struct {
+		CreateDiscussion struct {
+			Discussion struct {
+				ID  githubv4.ID
+				URL githubv4.String `graphql:"url"`
+			}
+		} `graphql:"createDiscussion(input: $input)"`
+	}
+	if err := client.Mutate(ctx, &mutation, input, nil); err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+
+	discussion := mutation.CreateDiscussion.Discussion
+	return discussionWriteResult(discussion.ID, discussion.URL)
+}
+
+func updateDiscussion(ctx context.Context, client *githubv4.Client, owner, repo string, args map[string]any) (*mcp.CallToolResult, *MinimalResponse, error) {
+	discussionNumber, err := RequiredInt(args, "discussionNumber")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+
+	input := githubv4.UpdateDiscussionInput{}
+	title, hasTitle, err := OptionalParamOK[string](args, "title")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+	if hasTitle {
+		input.Title = githubv4.NewString(githubv4.String(title))
+	}
+	body, hasBody, err := OptionalParamOK[string](args, "body")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+	if hasBody {
+		input.Body = githubv4.NewString(githubv4.String(body))
+	}
+	category, hasCategory, err := OptionalParamOK[string](args, "category")
+	if err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+	if hasCategory {
+		input.CategoryID = githubv4.NewID(githubv4.ID(category))
+	}
+	if !hasTitle && !hasBody && !hasCategory {
+		return utils.NewToolResultError("at least one of title, body or category must be provided for 'update'"), nil, nil
+	}
+
+	var q struct {
+		Repository struct {
+			Discussion struct {
+				ID githubv4.ID
+			} `graphql:"discussion(number: $discussionNumber)"`
+		} `graphql:"repository(owner: $owner, name: $repo)"`
+	}
+	vars := map[string]any{
+		"owner":            githubv4.String(owner),
+		"repo":             githubv4.String(repo),
+		"discussionNumber": githubv4.Int(discussionNumber), // #nosec G115 - discussion numbers are always small positive integers
+	}
+	if err := client.Query(ctx, &q, vars); err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+	input.DiscussionID = q.Repository.Discussion.ID
+
+	var mutation struct {
+		UpdateDiscussion struct {
+			Discussion struct {
+				ID  githubv4.ID
+				URL githubv4.String `graphql:"url"`
+			}
+		} `graphql:"updateDiscussion(input: $input)"`
+	}
+	if err := client.Mutate(ctx, &mutation, input, nil); err != nil {
+		return utils.NewToolResultError(err.Error()), nil, nil
+	}
+
+	discussion := mutation.UpdateDiscussion.Discussion
+	return discussionWriteResult(discussion.ID, discussion.URL)
+}
+
+func discussionWriteResult(id githubv4.ID, url githubv4.String) (*mcp.CallToolResult, *MinimalResponse, error) {
+	output := &MinimalResponse{
+		ID:  fmt.Sprintf("%v", id),
+		URL: string(url),
+	}
+	out, err := json.Marshal(output)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal discussion: %w", err)
+	}
+	return utils.NewToolResultText(string(out)), output, nil
+}
+
 func DiscussionCommentWrite(t translations.TranslationHelperFunc) inventory.ServerTool {
 	return NewTool[DiscussionCommentWriteInput, *DiscussionCommentWriteOutput](
 		ToolsetMetadataDiscussions,

@@ -22,7 +22,7 @@ var requirements = map[string]toolRequirements{
 	},
 	"discussion-participation": {
 		required: [][]string{{"get_discussion"}, {"discussion_comment_write"}},
-		optional: []string{"list_discussion_categories", "list_discussions", "get_discussion_comments"},
+		optional: []string{"list_discussion_categories", "list_discussions", "get_discussion_comments", "discussion_write"},
 	},
 	"issue-authoring": {
 		required: [][]string{{"search_issues"}, {"issue_write", "create_issue"}},

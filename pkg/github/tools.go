@@ -326,6 +326,7 @@ func AllTools(t translations.TranslationHelperFunc, opts ...ToolOption) []invent
 		ListDiscussions(t),
 		GetDiscussion(t),
 		GetDiscussionComments(t),
+		DiscussionWrite(t),
 		DiscussionCommentWrite(t),
 		ListDiscussionCategories(t),
 

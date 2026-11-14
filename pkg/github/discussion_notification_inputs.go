@@ -79,6 +79,16 @@ type DiscussionCommentWriteInput struct {
 	CommentNodeID    *string `json:"commentNodeID,omitempty"`
 }
 
+type DiscussionWriteInput struct {
+	Method           string  `json:"method"`
+	Owner            string  `json:"owner"`
+	Repo             string  `json:"repo"`
+	DiscussionNumber *int    `json:"discussionNumber,omitempty"`
+	Title            *string `json:"title,omitempty"`
+	Body             *string `json:"body,omitempty"`
+	Category         *string `json:"category,omitempty"`
+}
+
 type ListDiscussionCategoriesInput struct {
 	Owner string  `json:"owner"`
 	Repo  *string `json:"repo,omitempty"`
