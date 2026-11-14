@@ -1,0 +1,67 @@
+{
+  "annotations": {
+    "idempotentHint": false,
+    "readOnlyHint": false,
+    "title": "Create or update discussion"
+  },
+  "description": "Create a new or update an existing discussion in a GitHub repository.\nUse list_discussion_categories to find the category ID.",
+  "inputSchema": {
+    "properties": {
+      "body": {
+        "description": "Discussion content (required for 'create' method)",
+        "type": "string"
+      },
+      "category": {
+        "description": "Discussion category ID (required for 'create' method). For 'update', moves the discussion to this category of the same repository.",
+        "type": "string"
+      },
+      "discussionNumber": {
+        "description": "Discussion number (required for 'update' method)",
+        "type": "number"
+      },
+      "method": {
+        "description": "Write operation to perform on a discussion.\nOptions are:\n- 'create' - creates a new discussion.\n- 'update' - updates the title, body or category of an existing discussion.\n",
+        "enum": [
+          "create",
+          "update"
+        ],
+        "type": "string"
+      },
+      "owner": {
+        "description": "Repository owner",
+        "type": "string"
+      },
+      "repo": {
+        "description": "Repository name",
+        "type": "string"
+      },
+      "title": {
+        "description": "Discussion title (required for 'create' method)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "method",
+      "owner",
+      "repo"
+    ],
+    "type": "object"
+  },
+  "name": "discussion_write",
+  "outputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "url": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "url"
+    ],
+    "type": "object"
+  }
+}

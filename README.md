@@ -861,6 +861,20 @@ For negotiated supported protocol versions `2026-07-28` or newer, the consolidat
   - `owner`: Repository owner (required for 'add' and 'reply' methods) (string, optional)
   - `repo`: Repository name (required for 'add' and 'reply' methods) (string, optional)
 
+- **discussion_write** - Create or update discussion
+  - **OAuth Challenge Scopes**: `repo`
+  - `body`: Discussion content (required for 'create' method) (string, optional)
+  - `category`: Discussion category ID (required for 'create' method). For 'update', moves the discussion to this category of the same repository. (string, optional)
+  - `discussionNumber`: Discussion number (required for 'update' method) (number, optional)
+  - `method`: Write operation to perform on a discussion.
+    Options are:
+    - 'create' - creates a new discussion.
+    - 'update' - updates the title, body or category of an existing discussion.
+     (string, required)
+  - `owner`: Repository owner (string, required)
+  - `repo`: Repository name (string, required)
+  - `title`: Discussion title (required for 'create' method) (string, optional)
+
 - **get_discussion** - Get discussion
   - **OAuth Challenge Scopes**: `repo`
   - `discussionNumber`: Discussion Number (number, required)

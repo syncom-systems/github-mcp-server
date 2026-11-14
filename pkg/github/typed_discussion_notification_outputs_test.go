@@ -25,7 +25,7 @@ func discussionNotificationTools() []inventory.ServerTool {
 		ListNotifications(t), DismissNotification(t), MarkAllNotificationsRead(t),
 		GetNotificationDetails(t), ManageNotificationSubscription(t),
 		ManageRepositoryNotificationSubscription(t), ListDiscussions(t),
-		GetDiscussion(t), GetDiscussionComments(t), DiscussionCommentWrite(t),
+		GetDiscussion(t), GetDiscussionComments(t), DiscussionWrite(t), DiscussionCommentWrite(t),
 		ListDiscussionCategories(t),
 	}
 }
@@ -56,6 +56,10 @@ func typedDiscussionNotificationDeps(t *testing.T) BaseDeps {
 			data = map[string]any{"addDiscussionComment": map[string]any{"comment": comment}}
 		case strings.Contains(req.Query, "updateDiscussionComment("):
 			data = map[string]any{"updateDiscussionComment": map[string]any{"comment": comment}}
+		case strings.Contains(req.Query, "createDiscussion("):
+			data = map[string]any{"createDiscussion": map[string]any{"discussion": discussion}}
+		case strings.Contains(req.Query, "updateDiscussion("):
+			data = map[string]any{"updateDiscussion": map[string]any{"discussion": discussion}}
 		case strings.Contains(req.Query, "deleteDiscussionComment("):
 			data = map[string]any{"deleteDiscussionComment": map[string]any{"comment": comment}}
 		case strings.Contains(req.Query, "unmarkDiscussionCommentAsAnswer("):
@@ -108,6 +112,8 @@ func typedDiscussionNotificationDeps(t *testing.T) BaseDeps {
 				"closed": false, "isAnswered": true, "answerChosenAt": "2026-01-02T00:00:00Z",
 				"category": map[string]any{"name": "General"},
 			}}}
+		case strings.Contains(req.Query, "repository(owner:") && strings.Contains(req.Query, "{id}"):
+			data = map[string]any{"repository": map[string]any{"id": "R_1"}}
 		default:
 			t.Errorf("unexpected GraphQL query: %s", req.Query)
 		}
@@ -136,6 +142,7 @@ func typedDiscussionNotificationDeps(t *testing.T) BaseDeps {
 func TestTypedDiscussionNotificationOutputs(t *testing.T) {
 	const notificationText = `{"id":"123","repository":{"id":42,"full_name":"owner/repo","description":"legacy-only repository detail"},"subject":{"title":"A discussion","type":"Discussion"},"reason":"mention","unread":true}`
 	const commentText = `{"id":"DC_123","url":"https://github.com/owner/repo/discussions/1#discussioncomment-123"}`
+	const discussionText = `{"id":"D_1","url":"https://github.com/owner/repo/discussions/1"}`
 	const answerText = `{"discussionID":"D_1","discussionURL":"https://github.com/owner/repo/discussions/1"}`
 	const pageText = `{"endCursor":"end","hasNextPage":true,"hasPreviousPage":false,"startCursor":"start"}`
 	tests := []struct {
@@ -158,6 +165,8 @@ func TestTypedDiscussionNotificationOutputs(t *testing.T) {
 			`{"comments":[{"id":"DC_123","body":"A comment","isAnswer":true}],"pageInfo":` + pageText + `,"totalCount":1}`},
 		{"get_discussion_comments", map[string]any{"owner": "owner", "repo": "repo", "discussionNumber": 1.9, "includeReplies": true, "perPage": "0"},
 			`{"comments":[{"id":"DC_123","body":"A comment","isAnswer":true,"replies":[{"id":"DC_reply","body":"A reply"}],"replyTotalCount":1}],"pageInfo":` + pageText + `,"totalCount":1}`},
+		{"discussion_write", map[string]any{"method": "create", "owner": "owner", "repo": "repo", "title": "A title", "body": "A body", "category": "CAT_1"}, discussionText},
+		{"discussion_write", map[string]any{"method": "update", "owner": "owner", "repo": "repo", "discussionNumber": "1", "title": "New title"}, discussionText},
 		{"list_discussion_categories", map[string]any{"owner": "owner"},
 			`{"categories":[{"id":"CAT_1","name":"General"}],"pageInfo":` + pageText + `,"totalCount":1}`},
 	}
@@ -202,7 +211,7 @@ func TestTypedDiscussionNotificationOutputs(t *testing.T) {
 			client := connectCommentVisibilityClient(t, server, protocol)
 			list, err := client.ListTools(context.Background(), nil)
 			require.NoError(t, err)
-			require.Len(t, list.Tools, 11)
+			require.Len(t, list.Tools, 12)
 			byName := map[string]*mcp.Tool{}
 			for _, tool := range list.Tools {
 				byName[tool.Name] = tool
@@ -270,6 +279,8 @@ func TestTypedDiscussionNotificationOutputs(t *testing.T) {
 				{"discussion_comment_write", map[string]any{"method": "reply", "owner": "owner", "repo": "repo", "discussionNumber": 1, "body": "reply", "commentNodeID": "wrong-discussion"}, `does not belong to discussion #1 in owner/repo`},
 				{"discussion_comment_write", map[string]any{"method": "delete", "commentNodeID": " "}, "commentNodeID cannot be blank"},
 				{"discussion_comment_write", map[string]any{"method": "add", "owner": "owner", "repo": "repo", "discussionNumber": 1}, "missing required parameter: body"},
+				{"discussion_write", map[string]any{"method": "create", "owner": "owner", "repo": "repo", "title": "A title", "body": "A body"}, "missing required parameter: category"},
+				{"discussion_write", map[string]any{"method": "update", "owner": "owner", "repo": "repo", "discussionNumber": 1}, "at least one of title, body or category must be provided"},
 			} {
 				result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
 				require.NoError(t, err)
